@@ -42,7 +42,7 @@ Korrespondenten in Paperless.
 |-----------|------|
 | Backend   | Python 3.13, FastAPI, uvicorn |
 | PDF       | PyMuPDF (Rendern, Trennen, Drehen, Textebene) |
-| LLM       | `openai`-Client gegen OpenAI-kompatiblen Endpoint → Ollama (`qwen2.5vl:7b`) **oder** OpenAI |
+| LLM       | `openai`-Client gegen OpenAI-kompatiblen Endpoint → Ollama (`qwen2.5vl:7b`), OpenRouter **oder** OpenAI |
 | Matching  | rapidfuzz |
 | Paperless | httpx, Token-Auth |
 | Frontend  | Eine HTML-Seite + Vanilla JS, ausgeliefert von FastAPI (kein Build-Schritt) |

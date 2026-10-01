@@ -1,11 +1,11 @@
-"""Seitenanalyse über einen OpenAI-kompatiblen Vision-Endpoint (Ollama oder OpenAI)."""
+"""Seitenanalyse über einen OpenAI-kompatiblen Vision-Endpoint (Ollama, OpenRouter oder OpenAI)."""
 from __future__ import annotations
 
 import base64
 import json
 import re
 
-from openai import OpenAI
+from openai import BadRequestError, OpenAI
 
 from .config import Settings
 
@@ -88,12 +88,13 @@ class Analyzer:
         self.s = settings
         self.client = OpenAI(base_url=settings.llm_base_url, api_key=settings.llm_api_key or "none", timeout=180)
 
+    json_mode = True  # wird abgeschaltet, falls Modell/Anbieter den JSON-Modus ablehnt
+
     def analyze_page(self, image_jpeg: bytes, text: str, prev: dict | None, known: list[str]) -> dict:
         b64 = base64.b64encode(image_jpeg).decode()
-        resp = self.client.chat.completions.create(
+        kwargs = dict(
             model=self.s.llm_model,
             temperature=0,
-            response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": [
@@ -102,4 +103,13 @@ class Analyzer:
                 ]},
             ],
         )
+        if self.json_mode:
+            try:
+                resp = self.client.chat.completions.create(response_format={"type": "json_object"}, **kwargs)
+            except BadRequestError:
+                # z. B. manche OpenRouter-Modelle – ohne JSON-Modus erneut versuchen
+                self.json_mode = False
+                resp = self.client.chat.completions.create(**kwargs)
+        else:
+            resp = self.client.chat.completions.create(**kwargs)
         return clean(parse_json(resp.choices[0].message.content or "{}"))
