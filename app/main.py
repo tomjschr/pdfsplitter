@@ -183,6 +183,17 @@ def set_layout(job_id: str, body: LayoutEdit):
     return {"ok": True}
 
 
+class Confirm(BaseModel):
+    pages: list[int]
+    confirmed: bool = True
+
+
+@app.post("/api/jobs/{job_id}/confirm")
+def confirm(job_id: str, body: Confirm):
+    store.confirm_pages(get_job(job_id), body.pages, body.confirmed)
+    return {"ok": True}
+
+
 @app.post("/api/jobs/{job_id}/use-suggestions")
 def use_suggestions(job_id: str):
     store.use_suggestions(get_job(job_id))

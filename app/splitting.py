@@ -63,5 +63,7 @@ def segments(page_total: int, splits: list[int]) -> list[tuple[int, int]]:
 
 
 def is_uncertain(page: dict) -> bool:
+    """KI war unsicher, ob hier ein Dokument beginnt – und der Nutzer hat es noch nicht bestätigt."""
     a = page.get("analysis")
-    return bool(a) and not page.get("blank") and a.get("confidence", 1.0) < UNCERTAIN_BELOW
+    return (bool(a) and not page.get("blank") and not page.get("deleted") and not page.get("confirmed")
+            and a.get("confidence", 1.0) < UNCERTAIN_BELOW)

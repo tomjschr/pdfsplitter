@@ -187,12 +187,23 @@ class JobStore:
     def set_layout(self, job: Job, splits: list[int] | None, pages: list[dict] | None) -> None:
         def apply(s):
             if splits is not None:
-                s["splits"] = sorted({i for i in splits if 0 < i < len(s["pages"])})
+                new = sorted({i for i in splits if 0 < i < len(s["pages"])})
+                # Wer an einer Stelle selbst trennt oder zusammenführt, hat sie damit geprüft
+                for i in set(new) ^ set(s["splits"]):
+                    s["pages"][i]["confirmed"] = True
+                s["splits"] = new
                 s["splits_edited"] = True
             if pages is not None:
                 for p, new in zip(s["pages"], pages):
                     p["deleted"] = bool(new.get("deleted", p["deleted"]))
                     p["rotation"] = int(new.get("rotation", p["rotation"])) % 360
+        job.update(apply)
+
+    def confirm_pages(self, job: Job, pages: list[int], confirmed: bool = True) -> None:
+        def apply(s):
+            for i in pages:
+                if 0 <= i < len(s["pages"]):
+                    s["pages"][i]["confirmed"] = confirmed
         job.update(apply)
 
     def use_suggestions(self, job: Job) -> None:
@@ -239,6 +250,8 @@ class JobStore:
                 "correspondent_edited": "correspondent_id" in edited,
                 "match": m,
                 "uncertain": start > 0 and splitting.is_uncertain(pages[start]),
+                # Seiten, bei denen die KI unsicher war (Anfang + mögliche verpasste Trennungen)
+                "uncertain_pages": [i for i in idx if (i > start or start > 0) and splitting.is_uncertain(pages[i])],
                 "upload": stored.get("upload"),
                 "changed_since_upload": bool(stored.get("upload"))
                 and stored["upload"].get("pages") != self._signature(s, active),

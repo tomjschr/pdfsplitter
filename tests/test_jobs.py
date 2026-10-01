@@ -88,5 +88,17 @@ def test_end_to_end(client, sample_pdf, tmp_path):
     files = [f.name for f in (tmp_path / "consume").iterdir()]
     assert files and files[0].startswith("2024-03-01 Stadtwerke Musterstadt Testdokument")
 
+    # Unsichere Seite bestätigen entfernt die Markierung
+    import app.main as main
+
+    jid = job["id"]
+    assert job["pages"][2]["confirmed"]  # manuell gesetzte Trennung gilt als geprüft
+    main.store.jobs[jid].update(lambda s: s["pages"][4]["analysis"].update(confidence=0.4))
+    doc = client.get(f"/api/jobs/{jid}").json()["documents"][2]
+    assert doc["uncertain"] and doc["uncertain_pages"] == [4]
+    client.post(f"/api/jobs/{jid}/confirm", json={"pages": [4]})
+    doc = client.get(f"/api/jobs/{jid}").json()["documents"][2]
+    assert not doc["uncertain"] and doc["uncertain_pages"] == []
+
     # Paperless nicht konfiguriert -> sauberer Fehler
     assert client.post(f"/api/jobs/{job['id']}/documents/0/upload?target=paperless").status_code == 400

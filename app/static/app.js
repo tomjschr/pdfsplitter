@@ -252,7 +252,9 @@ function corrName(id) { return state.correspondents.find((c) => c.id === id)?.na
 
 function reviewReasons(d) {
   const r = [];
-  if (d.uncertain) r.push("Die KI war sich bei dieser Trennstelle unsicher");
+  if (d.uncertain_pages?.length) {
+    r.push(`Die KI war unsicher, ob bei Seite ${d.uncertain_pages.map((i) => i + 1).join(", ")} ein neues Dokument beginnt`);
+  }
   if (state.config.paperless_configured && d.correspondent_id == null) {
     r.push(d.supplier ? `„${d.supplier}“ gibt es noch nicht in Paperless` : "Kein Korrespondent erkannt");
   } else if (d.match?.status === "similar" && !d.correspondent_edited) {
@@ -363,6 +365,7 @@ function renderDoc(job, d, n, st) {
         <span class="doc-name">${titleLine ? esc(titleLine) : `<span class="none">Unbekannter Absender</span>`}</span>
         <span class="count">${plural(d.active_pages.length, "Seite", "Seiten")}</span>
         <span class="spacer"></span>
+        ${d.uncertain_pages?.length ? `<button class="btn sm" data-act="confirm" data-tip="Bestätigt, dass die Trennung dieses Dokuments so stimmt (Seite ${d.uncertain_pages.map((i) => i + 1).join(", ")}). Die gelbe Markierung verschwindet.">${icon("check")}Trennung passt</button>` : ""}
         <span class="chip ${st.cls}" data-tip="${esc(st.tip)}">${st.spin ? `<span class="spinner"></span>` : st.icon ? icon(st.icon) : ""}${esc(st.label)}</span>
         <div class="tools">
           ${st.key === "done" && d.upload.document_id && state.config.paperless_url ? `<a class="icon-btn ghost" href="${esc(state.config.paperless_url)}/documents/${d.upload.document_id}/details" target="_blank" data-tip="In Paperless öffnen">${icon("external")}</a>` : ""}
@@ -385,12 +388,14 @@ function renderDoc(job, d, n, st) {
 }
 
 function renderGap(page, i) {
-  const unsure = !page.blank && page.analysis && page.analysis.confidence < 0.7;
+  const unsure = isUnsure(page);
   const tipText = unsure
-    ? `Die KI ist unsicher, ob hier ein neues Dokument beginnt. Klicken = ab Seite ${i + 1} trennen.`
+    ? `Die KI ist unsicher, ob hier ein neues Dokument beginnt. Klicken = ab Seite ${i + 1} trennen. Gehört die Seite dazu, oben „Trennung passt“ klicken.`
     : `Klicken = ab Seite ${i + 1} ein neues Dokument beginnen`;
   return `<div class="gap ${unsure ? "uncertain" : ""}" data-act="split" data-page="${i}" data-tip="${esc(tipText)}"><span class="knob">${icon("scissors")}</span></div>`;
 }
+
+const isUnsure = (page) => !page.blank && !page.deleted && !page.confirmed && page.analysis && page.analysis.confidence < 0.7;
 
 function renderStub(page, i) {
   const why = page.blank ? "leer" : "entfernt";
@@ -533,9 +538,15 @@ $("#main").addEventListener("input", (e) => { if (e.target.matches(".combo-input
 $("#main").addEventListener("focusout", (e) => { if (e.target.matches(".combo-input")) setTimeout(() => { if (combo && combo.input === e.target) closeCombo(); }, 120); });
 $("#main").addEventListener("mousedown", (e) => {
   const opt = e.target.closest(".combo-opt");
-  if (opt) { e.preventDefault(); chooseCombo(Number(opt.dataset.i)); }
+  if (opt) { e.preventDefault(); chooseCombo(Number(opt.dataset.i)); return; }
+  // Feld war schon fokussiert (kein focusin) → Liste trotzdem öffnen
+  if (e.target.matches(".combo-input") && document.activeElement === e.target && combo?.input !== e.target) openCombo(e.target);
 });
 $("#main").addEventListener("keydown", (e) => {
+  if (e.target.matches(".combo-input") && combo?.input !== e.target && ["ArrowDown", "Enter"].includes(e.key)) {
+    e.preventDefault();
+    return openCombo(e.target);
+  }
   if (!combo || e.target !== combo.input) return;
   const sel = combo.items.map((it, i) => (it.type === "group" ? -1 : i)).filter((i) => i >= 0);
   const pos = sel.indexOf(combo.index);
@@ -593,6 +604,11 @@ async function handleAction(el) {
     switch (el.dataset.act) {
       case "split": await toggleSplit(page); break;
       case "merge": await setLayout({ splits: job.splits.filter((s) => s !== page) }); break;
+      case "confirm": {
+        const d = job.documents.find((x) => x.start === start);
+        await post(`/api/jobs/${job.id}/confirm`, { pages: d.uncertain_pages });
+        break;
+      }
       case "rotate": await rotatePage(page, 90); break;
       case "rotate-ccw": await rotatePage(page, -90); break;
       case "toggle-delete": await toggleDelete(page); break;
@@ -669,6 +685,7 @@ function renderViewer() {
     <dl>${a ? row("Absender", a.supplier) + row("Titel", a.title) + row("Datum", a.date) + row("Seitenangabe", a.page_marker) + row("KI-Sicherheit", `${Math.round(a.confidence * 100)} %`) : row("KI", page.error ? `Fehler: ${page.error}` : "noch nicht analysiert")}</dl>`;
   const isStart = job.splits.includes(i);
   $(".viewer-actions").innerHTML = `
+    ${isUnsure(page) && i > 0 ? `<button class="btn" data-vact="confirm" data-tip="Die KI war hier unsicher. Bestätigt, dass die Trennung an dieser Stelle so stimmt.">${icon("check")}Trennung passt<kbd>Enter</kbd></button>` : ""}
     ${i > 0 ? `<button class="btn" data-vact="split">${icon(isStart ? "merge" : "scissors")}${isStart ? "Zusammenführen" : "Neues Dokument ab hier"}<kbd>S</kbd></button>` : ""}
     <button class="btn" data-vact="rotate">${icon("rotate-cw")}Drehen<kbd>R</kbd></button>
     <button class="btn" data-vact="delete">${icon(page.deleted ? "undo" : "trash")}${page.deleted ? "Wiederherstellen" : "Seite entfernen"}<kbd>Entf</kbd></button>`;
@@ -682,6 +699,7 @@ function viewerAction(act) {
   const index = viewIndex;
   actionQueue = actionQueue.then(async () => {
     try {
+      if (act === "confirm") await post(`/api/jobs/${state.job.id}/confirm`, { pages: [index] });
       if (act === "split") await toggleSplit(index);
       if (act === "rotate") await rotatePage(index, 90);
       if (act === "delete") await toggleDelete(index);
@@ -702,6 +720,7 @@ document.addEventListener("keydown", (e) => {
   else if (k === "arrowleft") $(".viewer .prev").click();
   else if (k === "arrowright") $(".viewer .next").click();
   else if (k === "s" && viewIndex > 0) viewerAction("split");
+  else if (k === "enter" && viewIndex > 0 && isUnsure(state.job.pages[viewIndex])) viewerAction("confirm");
   else if (k === "r") viewerAction("rotate");
   else if (k === "delete" || k === "backspace" || k === "d") viewerAction("delete");
   else return;
