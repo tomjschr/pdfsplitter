@@ -50,6 +50,11 @@ Korrespondenten in Paperless.
 
 Kein Tesseract nötig – das Vision-Modell liest die Seiten direkt.
 
+**Zweistufiger Modus** (`OCR_MODEL` gesetzt): Phase 1 liest mit einem OCR-Modell (GLM-OCR) den Text aller
+Seiten, Phase 2 entscheidet ein Sprachmodell je Seite mit dem Text von Vor-, aktueller und Folgeseite.
+Phasen nacheinander, damit nur ein Modell im VRAM liegt. OCR-Text wird im Job gespeichert (Fortsetzen ohne
+erneute OCR) und ist in der Großansicht einsehbar.
+
 ## Konfiguration (`.env`, nicht eingecheckt)
 ```
 PAPERLESS_URL=https://paperless.schroederhub.de

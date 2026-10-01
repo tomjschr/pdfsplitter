@@ -271,6 +271,11 @@ button { font: inherit; }
 .viewer-info dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; font-size: 13px; margin: 14px 0 0; }
 .viewer-info dt { color: #9ca3af; }
 .viewer-info dd { margin: 0; color: #f3f4f6; word-break: break-word; }
+.viewer-info details.ocr { margin-top: 14px; font-size: 13px; }
+.viewer-info details.ocr summary { cursor: pointer; color: #cbd5e1; }
+.viewer-info details.ocr pre { white-space: pre-wrap; word-break: break-word; max-height: 40vh; overflow-y: auto;
+  background: #0f1218; border: 1px solid #2f3542; border-radius: 8px; padding: 10px; margin: 8px 0 0;
+  font: 12px/1.45 ui-monospace, Consolas, monospace; color: #e5e7eb; }
 .viewer-actions { display: flex; flex-direction: column; gap: 6px; }
 .viewer-actions .btn { justify-content: flex-start; width: 100%; background: #232834; border-color: #2f3542; color: #e5e7eb; }
 .viewer-actions .btn:hover { background: #2b3140; }

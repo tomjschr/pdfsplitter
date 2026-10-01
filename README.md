@@ -50,8 +50,10 @@ Der erste Start legt die Python-Umgebung (`.venv`) an, installiert die Pakete un
 | `PAPERLESS_URL` | ✔ | z. B. `https://paperless.schroederhub.de` oder im Heimnetz `http://<nas-ip>:8000` (schneller) |
 | `PAPERLESS_TOKEN` | ✔ | Paperless → Profil (oben rechts) → **API-Token** |
 | `LLM_BASE_URL` | – | OpenAI-kompatibler Endpoint. Leer = ohne KI, du trennst dann selbst. |
-| `LLM_MODEL` | – | z. B. `qwen2.5vl:7b` |
+| `LLM_MODEL` | – | Entscheidet über Trennung und Metadaten, z. B. `qwen3-vl:8b` |
 | `LLM_API_KEY` | – | Bei Ollama beliebig, bei OpenRouter/OpenAI dein Key |
+| `OCR_MODEL` | – | Schaltet den **zweistufigen Modus** ein, z. B. `glm-ocr`. Leer = einstufig |
+| `OCR_BASE_URL` / `OCR_API_KEY` | – | Nur falls das OCR-Modell woanders läuft als `LLM_BASE_URL` |
 | `CONSUME_DIR` | – | Fallback, z. B. `\\NAS\paperless\consume` |
 | `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` | – | Nur nötig, wenn **Cloudflare Access** vor Paperless hängt (Zero Trust → Service Auth → Service Token) |
 
@@ -65,9 +67,21 @@ Die `.env` wird nie eingecheckt.
 
 ### KI einrichten
 
-Die App spricht jede **OpenAI-kompatible** Schnittstelle an. Du wählst eine Variante und trägst drei Zeilen in
-die `.env` ein. In [.env.example](.env.example) stehen alle Varianten schon vorbereitet. Lass dort genau einen
+Die App spricht jede **OpenAI-kompatible** Schnittstelle an. Du wählst eine Variante und trägst ein paar Zeilen
+in die `.env` ein. In [.env.example](.env.example) stehen alle Varianten schon vorbereitet. Lass dort genau einen
 Block aktiv und kommentiere die anderen mit `#` aus.
+
+#### Einstufig oder zweistufig?
+
+| | Einstufig | **Zweistufig (empfohlen)** |
+|---|---|---|
+| Ablauf | Ein Vision-Modell sieht das Seitenbild und entscheidet direkt | **1.** GLM-OCR liest den Text aller Seiten → **2.** ein Sprachmodell entscheidet mit dem Text der **vorherigen, aktuellen und nächsten Seite** |
+| Stärke | einfacher, ein Modell | erkennt fortlaufende Briefe, Überträge, „Seite 2 von 3“ und Anlagen deutlich zuverlässiger |
+| Einschalten | `OCR_MODEL=` leer | `OCR_MODEL=glm-ocr` |
+
+Im zweistufigen Modus liest die App zuerst alle Seiten und analysiert danach. Es liegt also immer nur ein Modell
+im Grafikspeicher. Den erkannten Text jeder Seite siehst du in der Großansicht unter **„Erkannter Text“**. Dort
+kannst du nachsehen, wenn eine Trennung danebenliegt.
 
 | | Ollama (lokal) | OpenRouter | OpenAI |
 |---|---|---|---|
@@ -78,27 +92,47 @@ Block aktiv und kommentiere die anderen mit `#` aus.
 
 #### Variante A: Ollama (lokal, empfohlen bei sensiblen Dokumenten)
 
-Eine RTX 4070 mit 12 GB reicht.
+Eine RTX 4070 mit 12 GB reicht. Insgesamt brauchst du ca. 8,5 GB Speicherplatz für die Modelle.
+
+**Was du installierst:**
+
+| Was | Wozu | Größe |
+|---|---|---|
+| [Ollama](https://ollama.com/download) **ab 0.12.7** | führt die Modelle lokal aus | – |
+| `glm-ocr` | Stufe 1: liest den Text jeder Seite (laut Anbieter Platz 1 auf OmniDocBench V1.5) | 2,2 GB |
+| `qwen3-vl:8b` | Stufe 2: entscheidet über Trennung, Absender, Datum, Titel | 6,1 GB |
+
+**Schritte:**
 
 1. Ollama installieren: https://ollama.com/download. Es läuft danach im Hintergrund (Symbol im Infobereich).
-2. Ein Vision-Modell laden (einmalig ca. 6 GB):
+   Ist Ollama schon installiert, prüf die Version mit `ollama --version`. Unter 0.12.7 einfach den aktuellen Installer drüber installieren.
+2. Beide Modelle laden (einmalig):
    ```powershell
-   ollama pull qwen2.5vl:7b
+   ollama pull glm-ocr
+   ollama pull qwen3-vl:8b
    ```
-3. Prüfen, ob Ollama läuft und das Modell da ist:
+3. Prüfen, ob Ollama läuft und beide Modelle da sind:
    ```powershell
    ollama list
-   curl http://localhost:11434/v1/models
    ```
-4. `.env`:
+4. Optional einen Schnelltest mit einem gescannten Bild machen:
+   ```powershell
+   ollama run glm-ocr "Text Recognition: C:\Pfad\zu\scan.png"
+   ```
+5. `.env`:
    ```ini
    LLM_BASE_URL=http://localhost:11434/v1
    LLM_API_KEY=ollama
-   LLM_MODEL=qwen2.5vl:7b
+   LLM_MODEL=qwen3-vl:8b
+   OCR_MODEL=glm-ocr
    ```
-5. Während einer Analyse kannst du mit `ollama ps` prüfen, ob die GPU genutzt wird. In der Spalte *PROCESSOR* sollte `100% GPU` stehen.
+6. Die App neu starten. Oben rechts sollte jetzt **„KI · glm-ocr + qwen3-vl:8b“** stehen.
+7. Während einer Analyse kannst du mit `ollama ps` prüfen, ob die GPU genutzt wird. In der Spalte *PROCESSOR* sollte `100% GPU` stehen.
 
-Alternative: `gemma3:12b` ist etwas genauer, passt aber nur knapp in 12 GB VRAM.
+**Alternativen:**
+- **Einstufig:** `OCR_MODEL=` leer lassen. Dann sieht `qwen3-vl:8b` direkt das Seitenbild. Das braucht nur ein Modell, ist aber etwas ungenauer bei mehrseitigen Dokumenten.
+- **Speziell für deutsche Geschäftsdokumente:** [`Keyvan/german-ocr-3.1`](https://ollama.com/Keyvan/german-ocr-3.1). Ein Community-Modell (ca. 3 GB) auf Qwen-3.5-Basis. Zum Ausprobieren als `LLM_MODEL` im einstufigen Modus; unabhängige Tests dazu habe ich nicht gefunden.
+- **Stärker, aber knapp für 12 GB:** `gemma3:12b` als `LLM_MODEL`.
 
 #### Variante B: OpenRouter (ein Key für viele Modelle)
 
@@ -112,6 +146,17 @@ Alternative: `gemma3:12b` ist etwas genauer, passt aber nur knapp in 12 GB VRAM.
    LLM_MODEL=google/gemini-2.5-flash-lite
    ```
 5. **Datenschutz:** Unter **Settings → Privacy** Anbieter ausschließen, die Eingaben fürs Training nutzen. Wenn möglich *Zero Data Retention* aktivieren.
+
+**Kombination (lokal + OpenRouter):** Den Text erkennt GLM-OCR lokal per Ollama, die Entscheidung trifft ein
+OpenRouter-Modell. Dann geht nur der erkannte Text raus, keine Bilder. Ergänze dafür zum OpenRouter-Block:
+
+```ini
+OCR_MODEL=glm-ocr
+OCR_BASE_URL=http://localhost:11434/v1
+OCR_API_KEY=ollama
+```
+
+Im zweistufigen Modus braucht das Entscheidungsmodell keine Bild-Eingabe. Dann gehen auch reine Textmodelle.
 
 Passende Modelle (mit Bild-Eingabe, Stand Oktober 2026):
 
@@ -181,6 +226,8 @@ Im Korrespondenten-Feld: Tippen filtert die Liste, `↑` / `↓` wählt, `Enter`
 ### Tipps
 
 - **Dokumenttypen und Tags** vergibt die App nicht. Lege dafür in Paperless Regeln mit Auto-Matching an, die greifen nach dem Upload.
+  Mehr Automatik bekommst du mit [paperless-gpt](https://github.com/icereed/paperless-gpt). Es läuft per Docker z. B. auf der NAS und vergibt
+  per Ollama Tags, Dokumenttypen und eigene Felder. Es ergänzt diese App gut: Die App trennt, paperless-gpt verschlagwortet.
 - **Beim Scannen** Heftklammern entfernen und Seiten gerade einlegen. Gedrehte Seiten kannst du aber auch in der App drehen.
 - **Klein anfangen:** Der erste Ordner mit 20–30 Seiten zeigt, wie gut die Trennung bei deinen Dokumenten klappt.
 
@@ -192,6 +239,9 @@ Im Korrespondenten-Feld: Tippen filtert die Liste, `↑` / `↓` wählt, `Enter`
 |---|---|
 | „Weiterleitung nach … – vermutlich Cloudflare Access“ | Service-Token in `CF_ACCESS_CLIENT_ID/SECRET` eintragen oder die lokale NAS-Adresse nutzen |
 | Paperless antwortet 401/403 | `PAPERLESS_TOKEN` prüfen |
+| „OCR-Modell nicht erreichbar“ | `ollama list` zeigt `glm-ocr` nicht → `ollama pull glm-ocr`. Ist die Ollama-Version zu alt, aktualisieren |
+| „model requires a newer version of Ollama“ | Aktuellen Installer von ollama.com drüber installieren (`qwen3-vl` braucht mindestens 0.12.7) |
+| Trennung trotz zweistufig falsch | In der Großansicht „Erkannter Text“ öffnen. Ist der Text schon Unsinn, liegt es am Scan (Auflösung, Schräglage). Ist der Text gut, ein stärkeres `LLM_MODEL` probieren |
 | „KI nicht erreichbar“ (Ollama) | Läuft Ollama (Symbol im Infobereich)? Mit `ollama list` prüfen, ob das Modell geladen ist |
 | `401` / „No auth credentials“ (OpenRouter/OpenAI) | `LLM_API_KEY` prüfen, ohne Leerzeichen oder Anführungszeichen |
 | `402` / „Insufficient credits“ | Guthaben bei OpenRouter/OpenAI aufladen |

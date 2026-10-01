@@ -137,6 +137,17 @@ class JobStore:
             known = []
         pages = job.state["pages"]
         total = len(pages)
+
+        if analyzer.two_stage and not self._ocr_all(job, analyzer):
+            return
+        texts = [p.get("ocr_text") or "" for p in pages]
+        visible = [i for i, p in enumerate(pages) if not p["blank"]]
+
+        def neighbour(i: int, step: int) -> str | None:
+            pos = visible.index(i) + step
+            return texts[visible[pos]] if 0 <= pos < len(visible) else None
+
+        job.update(lambda s: s["progress"].update(done=0, phase="analyze"))
         prev = None
         errors = attempted = 0
         for i in range(total):
@@ -150,9 +161,12 @@ class JobStore:
                 continue
             attempted += 1
             try:
-                result = analyzer.analyze_page(
-                    pdf.render_for_llm(job.pdf_path, i), pdf.page_text(job.pdf_path, i), prev, known
-                )
+                if analyzer.two_stage:
+                    result = analyzer.analyze_text(neighbour(i, -1), texts[i], neighbour(i, 1), prev, known)
+                else:
+                    result = analyzer.analyze_page(
+                        pdf.render_for_llm(job.pdf_path, i), pdf.page_text(job.pdf_path, i), prev, known
+                    )
                 err = None
             except Exception as e:  # noqa: BLE001
                 log.warning("Analyse Seite %s fehlgeschlagen: %s", i + 1, e)
@@ -175,6 +189,34 @@ class JobStore:
                 prev = result
         if errors:
             job.update(lambda s: s.update(message=f"{errors} Seite(n) konnten nicht analysiert werden."))
+
+    def _ocr_all(self, job: Job, analyzer) -> bool:
+        """Stufe 1: Text aller Seiten erkennen. Erst alle Seiten, damit nur ein Modell im VRAM liegt."""
+        pages = job.state["pages"]
+        job.update(lambda s: s["progress"].update(done=0, phase="ocr"))
+        errors = attempted = 0
+        for i, page in enumerate(pages):
+            if page["blank"] or page.get("ocr_text") is not None:
+                job.update(lambda s: s["progress"].update(done=i + 1))
+                continue
+            attempted += 1
+            try:
+                text, err = analyzer.ocr_page(pdf.render_for_llm(job.pdf_path, i)), None
+            except Exception as e:  # noqa: BLE001
+                log.warning("OCR Seite %s fehlgeschlagen: %s", i + 1, e)
+                errors += 1
+                if errors >= 3 and errors == attempted:
+                    job.update(lambda s: s.update(message=f"OCR-Modell nicht erreichbar: {str(e)[:300]}"))
+                    return False
+                # Rückfall auf eine evtl. vorhandene Textebene des PDFs
+                text, err = pdf.page_text(job.pdf_path, i), f"OCR fehlgeschlagen: {str(e)[:200]}"
+
+            def apply(s, i=i, text=text, err=err):
+                s["pages"][i]["ocr_text"] = text
+                s["pages"][i]["error"] = err
+                s["progress"]["done"] = i + 1
+            job.update(apply)
+        return True
 
     def _apply_suggestions(self, job: Job) -> None:
         def apply(s):

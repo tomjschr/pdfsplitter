@@ -1,4 +1,10 @@
-"""Seitenanalyse über einen OpenAI-kompatiblen Vision-Endpoint (Ollama, OpenRouter oder OpenAI)."""
+"""Seitenanalyse über OpenAI-kompatible Endpoints (Ollama, OpenRouter oder OpenAI).
+
+Zwei Betriebsarten:
+- einstufig: ein Vision-Modell sieht das Seitenbild und entscheidet direkt
+- zweistufig (OCR_MODEL gesetzt): ein OCR-Modell (z. B. GLM-OCR) liest zuerst alle Seiten als Text,
+  danach entscheidet ein Sprachmodell anhand des Texts der vorherigen, aktuellen und nächsten Seite
+"""
 from __future__ import annotations
 
 import base64
@@ -15,7 +21,7 @@ erkennen, ob die aktuelle Seite die ERSTE Seite eines neuen Dokuments ist, und M
 
 Hinweise für eine erste Seite: Briefkopf/Logo, Anschriftenfeld, Betreff, Datum, "Seite 1 von N".
 Hinweise für eine Folgeseite: "Seite 2", fortlaufender Text ohne Briefkopf, Überträge, AGB-Rückseiten,
-gleicher Absender wie die Vorseite.
+gleicher Absender wie die Vorseite, ein Satz oder eine Tabelle, die auf der Vorseite begonnen hat.
 
 Antworte NUR mit JSON in genau diesem Format:
 {"is_first_page": true|false,
@@ -27,29 +33,52 @@ Antworte NUR mit JSON in genau diesem Format:
 
 "supplier" ist immer der ABSENDER des Dokuments, nie der Empfänger."""
 
+# GLM-OCR erwartet diesen Aufgaben-Prompt; andere OCR-Modelle kommen damit ebenfalls zurecht
+OCR_PROMPT = "Text Recognition:"
+
+PREV_CHARS = 1200  # vom Ende der Vorseite
+CURRENT_CHARS = 4000
+NEXT_CHARS = 1200  # vom Anfang der Folgeseite
+
+
+def _known_part(known: list[str]) -> str | None:
+    if not known:
+        return None
+    return "Bereits bekannte Absender – wenn einer davon passt, verwende exakt diese Schreibweise: " + "; ".join(known)
+
+
+def _prev_part(prev: dict | None) -> str:
+    if not prev:
+        return "Dies ist die erste Seite des Stapels (also sicher eine erste Seite)."
+    return ("Ergebnis der vorherigen Seite: "
+            f"Absender={prev.get('supplier')!r}, Titel={prev.get('title')!r}, Seitenangabe={prev.get('page_marker')!r}.")
+
 
 def _user_prompt(prev: dict | None, text: str, known: list[str]) -> str:
-    parts = []
-    if prev:
-        parts.append(
-            "Vorherige Seite: "
-            f"Absender={prev.get('supplier')!r}, Titel={prev.get('title')!r}, Seitenangabe={prev.get('page_marker')!r}."
-        )
-    else:
-        parts.append("Dies ist die erste Seite des Stapels (also sicher eine erste Seite).")
-    if known:
-        parts.append(
-            "Bereits bekannte Absender – wenn einer davon passt, verwende exakt diese Schreibweise: "
-            + "; ".join(known)
-        )
+    parts = [_prev_part(prev), _known_part(known)]
     if text:
         parts.append("Text der Seite (OCR, evtl. fehlerhaft):\n" + text[:3000])
     parts.append("Analysiere die Seite im Bild.")
-    return "\n\n".join(parts)
+    return "\n\n".join(p for p in parts if p)
+
+
+def text_prompt(prev_text: str | None, text: str, next_text: str | None, prev: dict | None, known: list[str]) -> str:
+    parts = [_prev_part(prev), _known_part(known)]
+    if prev_text:
+        parts.append("=== ENDE DER VORHERIGEN SEITE ===\n" + prev_text[-PREV_CHARS:])
+    parts.append("=== AKTUELLE SEITE (diese bewerten) ===\n" + (text[:CURRENT_CHARS] or "(kein Text erkannt)"))
+    if next_text:
+        parts.append("=== ANFANG DER NÄCHSTEN SEITE (nur Kontext) ===\n" + next_text[:NEXT_CHARS])
+    parts.append("Bewerte ausschließlich die AKTUELLE SEITE.")
+    return "\n\n".join(p for p in parts if p)
+
+
+_THINK_RE = re.compile(r"<think>.*?</think>", re.S)
 
 
 def parse_json(content: str) -> dict:
-    content = content.strip()
+    content = _THINK_RE.sub("", content).strip()  # Denk-Ausgabe von Reasoning-Modellen entfernen
+    content = re.sub(r"^```(?:json)?|```$", "", content, flags=re.M).strip()
     try:
         return json.loads(content)
     except json.JSONDecodeError:
@@ -83,26 +112,52 @@ def clean(result: dict) -> dict:
     }
 
 
+def _image_part(image_jpeg: bytes) -> dict:
+    return {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(image_jpeg).decode()}}
+
+
 class Analyzer:
+    json_mode = True  # wird abgeschaltet, falls Modell/Anbieter den JSON-Modus ablehnt
+
     def __init__(self, settings: Settings):
         self.s = settings
         self.client = OpenAI(base_url=settings.llm_base_url, api_key=settings.llm_api_key or "none", timeout=180)
-
-    json_mode = True  # wird abgeschaltet, falls Modell/Anbieter den JSON-Modus ablehnt
-
-    def analyze_page(self, image_jpeg: bytes, text: str, prev: dict | None, known: list[str]) -> dict:
-        b64 = base64.b64encode(image_jpeg).decode()
-        kwargs = dict(
-            model=self.s.llm_model,
-            temperature=0,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": [
-                    {"type": "text", "text": _user_prompt(prev, text, known)},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-                ]},
-            ],
+        self.ocr_client = (
+            OpenAI(base_url=settings.ocr_base_url, api_key=settings.ocr_api_key or "none", timeout=300)
+            if settings.ocr_configured else None
         )
+
+    @property
+    def two_stage(self) -> bool:
+        return self.ocr_client is not None
+
+    # --- Stufe 1: Texterkennung --------------------------------------------
+    def ocr_page(self, image_jpeg: bytes) -> str:
+        resp = self.ocr_client.chat.completions.create(
+            model=self.s.ocr_model,
+            temperature=0,
+            messages=[{"role": "user", "content": [{"type": "text", "text": OCR_PROMPT}, _image_part(image_jpeg)]}],
+        )
+        return _THINK_RE.sub("", resp.choices[0].message.content or "").strip()
+
+    # --- Stufe 2: Entscheidung ---------------------------------------------
+    def analyze_text(self, prev_text: str | None, text: str, next_text: str | None,
+                     prev: dict | None, known: list[str]) -> dict:
+        return self._decide([
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": text_prompt(prev_text, text, next_text, prev, known)},
+        ])
+
+    # --- Einstufig: Vision-Modell sieht das Bild ---------------------------
+    def analyze_page(self, image_jpeg: bytes, text: str, prev: dict | None, known: list[str]) -> dict:
+        return self._decide([
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": [{"type": "text", "text": _user_prompt(prev, text, known)},
+                                         _image_part(image_jpeg)]},
+        ])
+
+    def _decide(self, messages: list[dict]) -> dict:
+        kwargs = dict(model=self.s.llm_model, temperature=0, messages=messages)
         if self.json_mode:
             try:
                 resp = self.client.chat.completions.create(response_format={"type": "json_object"}, **kwargs)

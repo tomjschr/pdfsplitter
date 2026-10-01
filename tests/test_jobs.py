@@ -21,6 +21,8 @@ def test_build_pdf_with_rotation(sample_pdf, tmp_path):
 
 
 class FakeAnalyzer:
+    two_stage = False
+
     def __init__(self, settings):
         pass
 
@@ -29,6 +31,19 @@ class FakeAnalyzer:
         marker = next((line for line in text.splitlines() if line.startswith("Seite")), None)
         return {"is_first_page": "Seite 2" not in text, "confidence": 0.95, "supplier": first_line,
                 "date": "2024-03-01", "title": "Testdokument", "page_marker": marker}
+
+
+class FakeTwoStage(FakeAnalyzer):
+    """OCR liefert den Text der Seite; Entscheidung prüft, dass Nachbarseiten mitkommen."""
+    two_stage = True
+    calls: list = []
+
+    def ocr_page(self, image):
+        return image.decode()  # render_for_llm ist im Test so gepatcht, dass es den Seitentext liefert
+
+    def analyze_text(self, prev_text, text, next_text, prev, known):
+        FakeTwoStage.calls.append((prev_text is not None, next_text is not None))
+        return FakeAnalyzer.analyze_page(self, b"", text, prev, known)
 
 
 @pytest.fixture
@@ -102,3 +117,22 @@ def test_end_to_end(client, sample_pdf, tmp_path):
 
     # Paperless nicht konfiguriert -> sauberer Fehler
     assert client.post(f"/api/jobs/{job['id']}/documents/0/upload?target=paperless").status_code == 400
+
+
+def test_two_stage(client, sample_pdf, monkeypatch):
+    import app.llm as llm
+
+    monkeypatch.setattr(llm, "Analyzer", FakeTwoStage)
+    monkeypatch.setattr(pdf, "render_for_llm", lambda path, i: pdf.page_text(path, i).encode())
+    FakeTwoStage.calls = []
+    with sample_pdf.open("rb") as fh:
+        r = client.post("/api/jobs", files={"file": ("scan.pdf", fh, "application/pdf")}, data={"duplex": "true"})
+    job = wait_ready(client, r.json()["id"])
+
+    assert job["splits"] == [4]
+    assert [d["active_pages"] for d in job["documents"]] == [[0, 2], [4]]
+    # 3 sichtbare Seiten: erste ohne Vorgänger, letzte ohne Nachfolger, Leerseiten übersprungen
+    assert FakeTwoStage.calls == [(False, True), (True, True), (True, False)]
+    assert "ocr_text" not in job["pages"][0] and job["pages"][0]["has_text"]
+    t = client.get(f"/api/jobs/{job['id']}/pages/2/text").json()
+    assert t["source"] == "ocr" and "Seite 2 von 2" in t["text"]

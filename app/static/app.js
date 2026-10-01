@@ -135,12 +135,15 @@ function renderPills() {
     : `Verbunden mit ${c.paperless_url} · ${state.correspondents.length} Korrespondenten geladen`;
   const paperlessOn = c.paperless_configured && !state.corrError;
   const llmTip = c.llm_configured
-    ? `Die Seiten werden mit ${c.llm_model} analysiert – ${c.llm_local ? "lokal auf deinem Rechner, nichts verlässt dein Netzwerk." : "über einen Cloud-Dienst."}`
+    ? (c.ocr_model
+      ? `Zweistufig: ${c.ocr_model} liest den Text jeder Seite, ${c.llm_model} entscheidet anhand der Nachbarseiten über die Trennung`
+      : `Die Seiten werden mit ${c.llm_model} analysiert`)
+      + ` – ${c.llm_local ? "lokal auf deinem Rechner, nichts verlässt dein Netzwerk." : "über einen Cloud-Dienst."}`
     : "Keine KI eingerichtet – Trennstellen setzt du dann selbst. LLM_BASE_URL in der .env setzen.";
   const consumeTip = c.consume_configured ? "Fallback aktiv: Dokumente können auch in den Consume-Ordner kopiert werden." : "Kein Consume-Ordner eingerichtet (optional, CONSUME_DIR in der .env).";
   $("#status-pills").innerHTML =
     `<span class="pill ${paperlessOn ? "on" : "off"}" data-tip="${esc(paperlessTip)}"><span class="dot"></span>Paperless</span>` +
-    `<span class="pill ${c.llm_configured ? "on" : "off"}" data-tip="${esc(llmTip)}"><span class="dot"></span>KI${c.llm_configured ? ` · ${esc(c.llm_model)}` : " aus"}</span>` +
+    `<span class="pill ${c.llm_configured ? "on" : "off"}" data-tip="${esc(llmTip)}"><span class="dot"></span>KI${c.llm_configured ? ` · ${c.ocr_model ? `${esc(c.ocr_model)} + ` : ""}${esc(c.llm_model)}` : " aus"}</span>` +
     (c.consume_configured ? `<span class="pill on" data-tip="${esc(consumeTip)}"><span class="dot"></span>Consume</span>` : "");
 }
 
@@ -310,7 +313,9 @@ function renderJob() {
       </div>
     </div>
     ${busy ? `<div class="banner info"><span class="spinner"></span><div class="grow">
-        <b>KI analysiert Seite ${job.progress.done} von ${job.progress.total}</b> – du kannst schon währenddessen prüfen und korrigieren.
+        <b>${job.progress.phase === "ocr" ? `Schritt 1/2 · Texterkennung Seite ${job.progress.done} von ${job.progress.total}`
+          : `${state.config.ocr_model ? "Schritt 2/2 · " : ""}KI analysiert Seite ${job.progress.done} von ${job.progress.total}`}</b>
+        – ${job.progress.phase === "ocr" ? "danach schlägt die KI die Trennstellen vor." : "du kannst schon währenddessen prüfen und korrigieren."}
         <div class="progress"><span style="width:${(100 * job.progress.done) / Math.max(1, job.progress.total)}%"></span></div></div></div>` : ""}
     ${job.message ? `<div class="banner warn">${icon("alert")}<div class="grow">${esc(job.message)}</div></div>` : ""}
     ${job.paperless_error ? `<div class="banner bad">${icon("alert")}<div class="grow"><b>Paperless nicht erreichbar.</b> ${esc(job.paperless_error)}</div></div>` : ""}
@@ -661,6 +666,8 @@ $("#main").addEventListener("keydown", (e) => { if (e.key === "Enter" && e.targe
 // ===== Großansicht mit Tastatur-Workflow ===================================
 const viewer = $("#viewer");
 let viewIndex = 0;
+let ocrOpen = false;
+const ocrCache = {};
 
 function openViewer(i) { viewIndex = i; viewer.hidden = false; renderViewer(); }
 function closeViewer() { viewer.hidden = true; }
@@ -682,7 +689,22 @@ function renderViewer() {
   $(".viewer-info").innerHTML = `
     <h3>Seite ${i + 1} <span class="muted">von ${job.pages.length}</span></h3>
     <div class="muted">Dokument ${docIdx + 1}${posInDoc >= 0 ? ` · Seite ${posInDoc + 1} von ${d.active_pages.length}` : ""}${page.deleted ? " · entfernt" : ""}${page.blank ? " · leer" : ""}</div>
-    <dl>${a ? row("Absender", a.supplier) + row("Titel", a.title) + row("Datum", a.date) + row("Seitenangabe", a.page_marker) + row("KI-Sicherheit", `${Math.round(a.confidence * 100)} %`) : row("KI", page.error ? `Fehler: ${page.error}` : "noch nicht analysiert")}</dl>`;
+    <dl>${a ? row("Absender", a.supplier) + row("Titel", a.title) + row("Datum", a.date) + row("Seitenangabe", a.page_marker) + row("KI-Sicherheit", `${Math.round(a.confidence * 100)} %`) : row("KI", page.error ? `Fehler: ${page.error}` : "noch nicht analysiert")}</dl>
+    ${!page.blank ? `<details class="ocr" data-page="${i}"><summary data-tip="Zeigt den Text, den die KI für diese Seite gelesen hat – hilfreich, wenn eine Trennung falsch erkannt wurde.">Erkannter Text</summary><pre>…</pre></details>` : ""}`;
+  const det = $(".viewer-info details.ocr");
+  if (det) {
+    // Offen bleiben, auch wenn die Ansicht beim Polling neu gezeichnet wird
+    det.open = ocrOpen;
+    const load = async () => {
+      const key = `${job.id}:${i}:${page.has_text}`;
+      try {
+        ocrCache[key] ??= (await api(`/api/jobs/${job.id}/pages/${i}/text`)).text || "(kein Text erkannt)";
+        $("pre", det).textContent = ocrCache[key];
+      } catch (e) { $("pre", det).textContent = e.message; }
+    };
+    det.addEventListener("toggle", () => { ocrOpen = det.open; if (det.open) load(); });
+    if (det.open) load();
+  }
   const isStart = job.splits.includes(i);
   $(".viewer-actions").innerHTML = `
     ${isUnsure(page) && i > 0 ? `<button class="btn" data-vact="confirm" data-tip="Die KI war hier unsicher. Bestätigt, dass die Trennung an dieser Stelle so stimmt.">${icon("check")}Trennung passt<kbd>Enter</kbd></button>` : ""}

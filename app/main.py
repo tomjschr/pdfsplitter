@@ -63,6 +63,7 @@ def config():
         "llm_configured": settings.llm_configured,
         "llm_model": settings.llm_model if settings.llm_configured else None,
         "llm_local": any(h in settings.llm_base_url for h in ("localhost", "127.0.0.1", "[::1]")),
+        "ocr_model": settings.ocr_model if settings.ocr_configured and settings.llm_configured else None,
         "consume_configured": settings.consume_configured,
     }
 
@@ -133,6 +134,9 @@ def job_detail(job_id: str):
     with job.lock:
         state = dict(job.state)
         docs = store.documents(job, corr)
+        # OCR-Text nicht bei jedem Polling mitschicken – nur ob es ihn gibt
+        state["pages"] = [{k: v for k, v in p.items() if k != "ocr_text"} | {"has_text": bool(p.get("ocr_text"))}
+                          for p in state["pages"]]
     state.pop("docs", None)
     return state | {"documents": docs, "paperless_error": err}
 
@@ -148,7 +152,7 @@ def delete_job(job_id: str):
 def analyze(job_id: str, reset: bool = False):
     job = get_job(job_id)
     if reset:
-        job.update(lambda s: [p.update(analysis=None, error=None) for p in s["pages"]])
+        job.update(lambda s: [p.update(analysis=None, error=None, ocr_text=None) for p in s["pages"]])
     store.reanalyze(job)
     return {"ok": True}
 
@@ -163,6 +167,16 @@ def page_image(job_id: str, index: int, size: str = "thumb"):
     if not path.exists():
         pdf.render_page(job.pdf_path, index, width, path)
     return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "max-age=86400"})
+
+
+@app.get("/api/jobs/{job_id}/pages/{index}/text")
+def page_text(job_id: str, index: int):
+    job = get_job(job_id)
+    if not 0 <= index < len(job.state["pages"]):
+        raise HTTPException(404)
+    text = job.state["pages"][index].get("ocr_text")
+    return {"text": text if text is not None else pdf.page_text(job.pdf_path, index),
+            "source": "ocr" if text is not None else "pdf"}
 
 
 class PageEdit(BaseModel):
