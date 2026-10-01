@@ -20,6 +20,15 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 STATIC = Path(__file__).parent / "static"
 
 app = FastAPI(title="PDF Splitter")
+
+
+@app.middleware("http")
+async def no_cache_frontend(request, call_next):
+    # Frontend-Dateien immer frisch laden, damit Updates sofort sichtbar sind
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 paperless = Paperless(settings)
 store = JobStore(settings, paperless)
 
@@ -53,6 +62,7 @@ def config():
         "paperless_url": settings.paperless_url,
         "llm_configured": settings.llm_configured,
         "llm_model": settings.llm_model if settings.llm_configured else None,
+        "llm_local": any(h in settings.llm_base_url for h in ("localhost", "127.0.0.1", "[::1]")),
         "consume_configured": settings.consume_configured,
     }
 

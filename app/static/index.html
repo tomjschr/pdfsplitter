@@ -7,44 +7,52 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <header>
-    <h1>PDF Splitter</h1>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"></span>
+      <span>PDF Splitter</span>
+    </div>
     <div id="status-pills"></div>
   </header>
+
   <div class="layout">
-    <aside>
-      <form id="upload-form">
-        <label id="dropzone">
-          <input type="file" id="file-input" accept="application/pdf" multiple hidden>
-          <strong>Bulk-Scan hierher ziehen</strong>
-          <span>oder klicken zum Auswählen (PDF)</span>
-        </label>
-        <label class="check"><input type="checkbox" id="duplex" checked> Duplex-Scan (Vorder- &amp; Rückseiten)</label>
-      </form>
+    <aside class="sidebar">
+      <label id="dropzone" class="dropzone small" data-tip="PDF hierher ziehen oder klicken. Mehrere Dateien gleichzeitig sind möglich.">
+        <input type="file" id="file-input" accept="application/pdf" multiple hidden>
+        <span class="dz-icon" data-icon="upload"></span>
+        <span class="dz-text"><strong>Scan hinzufügen</strong><span>PDF ablegen oder klicken</span></span>
+      </label>
+      <label class="switch" data-tip="Beim Duplex-Scan werden leere Rückseiten automatisch ausgeblendet, und neue Dokumente beginnen nur auf Vorderseiten.">
+        <input type="checkbox" id="duplex" checked>
+        <span class="track"><span class="thumb"></span></span>
+        Duplex-Scan
+      </label>
       <div id="upload-progress"></div>
-      <h2>Scans</h2>
+
+      <div class="section-title">Scans</div>
       <ul id="job-list"></ul>
     </aside>
-    <main id="main">
-      <div class="empty">
-        <p>Lade links einen Bulk-Scan hoch. Die Seiten werden automatisch in Dokumente getrennt –
-          du korrigierst danach nur noch.</p>
-        <ul class="help">
-          <li><b>✂</b> zwischen zwei Seiten klicken → neues Dokument ab hier</li>
-          <li><b>⤒ Zusammenführen</b> → Trennstelle entfernen</li>
-          <li>Seite anklicken → große Ansicht (Pfeiltasten blättern, Esc schließt)</li>
-          <li>Leere Rückseiten sind automatisch ausgeblendet und können wiederhergestellt werden</li>
-        </ul>
-      </div>
-    </main>
+
+    <main id="main"></main>
   </div>
-  <div id="viewer" hidden>
-    <button class="close" title="Schließen (Esc)">×</button>
-    <button class="nav prev" title="Vorherige Seite (←)">‹</button>
-    <img alt="">
-    <button class="nav next" title="Nächste Seite (→)">›</button>
-    <div class="caption"></div>
+
+  <div id="viewer" class="viewer" hidden>
+    <div class="viewer-stage">
+      <button class="icon-btn ghost light nav prev" data-tip="Vorherige Seite (←)" data-icon="chevron-left"></button>
+      <img alt="">
+      <button class="icon-btn ghost light nav next" data-tip="Nächste Seite (→)" data-icon="chevron-right"></button>
+    </div>
+    <aside class="viewer-panel">
+      <button class="icon-btn ghost light close" data-tip="Schließen (Esc)" data-icon="x"></button>
+      <div class="viewer-info"></div>
+      <div class="viewer-actions"></div>
+    </aside>
   </div>
+
+  <dialog id="dialog"><form method="dialog"></form></dialog>
+  <div id="toasts"></div>
+  <div id="tooltip" role="tooltip" hidden></div>
+
   <script src="/static/app.js"></script>
 </body>
 </html>
