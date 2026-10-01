@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PDF Splitter</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>PDF Splitter</h1>
+    <div id="status-pills"></div>
+  </header>
+  <div class="layout">
+    <aside>
+      <form id="upload-form">
+        <label id="dropzone">
+          <input type="file" id="file-input" accept="application/pdf" multiple hidden>
+          <strong>Bulk-Scan hierher ziehen</strong>
+          <span>oder klicken zum Auswählen (PDF)</span>
+        </label>
+        <label class="check"><input type="checkbox" id="duplex" checked> Duplex-Scan (Vorder- &amp; Rückseiten)</label>
+      </form>
+      <div id="upload-progress"></div>
+      <h2>Scans</h2>
+      <ul id="job-list"></ul>
+    </aside>
+    <main id="main">
+      <div class="empty">
+        <p>Lade links einen Bulk-Scan hoch. Die Seiten werden automatisch in Dokumente getrennt –
+          du korrigierst danach nur noch.</p>
+        <ul class="help">
+          <li><b>✂</b> zwischen zwei Seiten klicken → neues Dokument ab hier</li>
+          <li><b>⤒ Zusammenführen</b> → Trennstelle entfernen</li>
+          <li>Seite anklicken → große Ansicht (Pfeiltasten blättern, Esc schließt)</li>
+          <li>Leere Rückseiten sind automatisch ausgeblendet und können wiederhergestellt werden</li>
+        </ul>
+      </div>
+    </main>
+  </div>
+  <div id="viewer" hidden>
+    <button class="close" title="Schließen (Esc)">×</button>
+    <button class="nav prev" title="Vorherige Seite (←)">‹</button>
+    <img alt="">
+    <button class="nav next" title="Nächste Seite (→)">›</button>
+    <div class="caption"></div>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,92 @@
+import time
+from dataclasses import replace
+
+import pymupdf
+import pytest
+from fastapi.testclient import TestClient
+
+from app import pdf
+
+
+def test_blank_detection(sample_pdf):
+    assert pdf.detect_blank_pages(sample_pdf) == [False, True, False, True, False, True]
+
+
+def test_build_pdf_with_rotation(sample_pdf, tmp_path):
+    out = pdf.build_pdf(sample_pdf, [(0, 0), (2, 90)], tmp_path / "out.pdf")
+    with pymupdf.open(out) as doc:
+        assert doc.page_count == 2
+        assert doc[1].rotation == 90
+        assert "Telekom" in doc[1].get_text()
+
+
+class FakeAnalyzer:
+    def __init__(self, settings):
+        pass
+
+    def analyze_page(self, image, text, prev, known):
+        first_line = text.splitlines()[0] if text else None
+        marker = next((line for line in text.splitlines() if line.startswith("Seite")), None)
+        return {"is_first_page": "Seite 2" not in text, "confidence": 0.95, "supplier": first_line,
+                "date": "2024-03-01", "title": "Testdokument", "page_marker": marker}
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    import app.config as config
+    import app.llm as llm
+
+    s = replace(config.Settings(), data_dir=tmp_path / "data", paperless_url="", paperless_token="",
+                llm_base_url="http://fake/v1", consume_dir=str(tmp_path / "consume"))
+    (tmp_path / "consume").mkdir()
+    monkeypatch.setattr(config, "settings", s)
+    monkeypatch.setattr(llm, "Analyzer", FakeAnalyzer)
+    import importlib
+
+    import app.main as main
+    importlib.reload(main)
+    return TestClient(main.app)
+
+
+def wait_ready(client, job_id):
+    for _ in range(100):
+        job = client.get(f"/api/jobs/{job_id}").json()
+        if job["status"] == "ready":
+            return job
+        time.sleep(0.05)
+    raise AssertionError("Job wurde nicht fertig")
+
+
+def test_end_to_end(client, sample_pdf, tmp_path):
+    with sample_pdf.open("rb") as fh:
+        r = client.post("/api/jobs", files={"file": ("scan.pdf", fh, "application/pdf")}, data={"duplex": "true"})
+    assert r.status_code == 200, r.text
+    job = wait_ready(client, r.json()["id"])
+
+    assert [p["blank"] for p in job["pages"]] == [False, True, False, True, False, True]
+    assert job["splits"] == [4]
+    docs = job["documents"]
+    assert [d["active_pages"] for d in docs] == [[0, 2], [4]]
+    assert docs[0]["supplier"].startswith("Telekom")
+    assert docs[1]["date"] == "2024-03-01"
+
+    # Manuell trennen + Metadaten ändern
+    client.put(f"/api/jobs/{job['id']}/layout", json={"splits": [2, 4]})
+    client.put(f"/api/jobs/{job['id']}/documents/2", json={"title": "Eigener Titel"})
+    job = client.get(f"/api/jobs/{job['id']}").json()
+    assert job["splits_edited"] and len(job["documents"]) == 3
+    assert job["documents"][1]["title"] == "Eigener Titel"
+
+    # PDF-Export und Consume-Upload
+    r = client.get(f"/api/jobs/{job['id']}/documents/0.pdf")
+    assert r.status_code == 200 and r.content.startswith(b"%PDF")
+    assert client.post(f"/api/jobs/{job['id']}/documents/4/upload?target=consume").status_code == 200
+    for _ in range(50):
+        if list((tmp_path / "consume").iterdir()):
+            break
+        time.sleep(0.05)
+    files = [f.name for f in (tmp_path / "consume").iterdir()]
+    assert files and files[0].startswith("2024-03-01 Stadtwerke Musterstadt Testdokument")
+
+    # Paperless nicht konfiguriert -> sauberer Fehler
+    assert client.post(f"/api/jobs/{job['id']}/documents/0/upload?target=paperless").status_code == 400
